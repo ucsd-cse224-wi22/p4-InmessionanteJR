@@ -69,7 +69,9 @@ func ClientSync(client RPCClient) {
 		buff_content += "\n"
 	}
 	// fmt.Println("buff_content: ", buff_content)
-	buff_content = buff_content[:len(buff_content)-1]
+	if len(buff_content) > 0 {
+		buff_content = buff_content[:len(buff_content)-1]
+	}
 	ioutil.WriteFile(client.BaseDir+"/index.txt", []byte(buff_content), 0644)
 }
 
@@ -86,7 +88,8 @@ func ComputeFileHashlist(client RPCClient) (FileHashlists map[string][]string) {
 	for _, file := range files {
 		if file.IsDir() {
 			log.Panicln("Subdir exists in current dir!", err)
-		} else if file.Name() == "index.txt" {
+		} else if file.Name() == "index.txt" || file.Name() == ".DS_Store" {
+			// } else if file.Name() == "index.txt" {
 			continue
 		} else {
 			f, _ := os.Open(client.BaseDir + "/" + file.Name())
@@ -138,7 +141,9 @@ func GitAdd(local_Filehashlists map[string][]string, BaseDir string) map[string]
 			if err == io.EOF {
 				break
 			}
+			fmt.Println("line: ", line)
 			decoded_line := strings.Split(string(line), ",")
+			fmt.Println("decoded_line: ", decoded_line)
 			local_filename := decoded_line[0]
 			local_version, _ := strconv.Atoi(decoded_line[1])
 			local_hashlist := strings.Split(decoded_line[2], " ")
