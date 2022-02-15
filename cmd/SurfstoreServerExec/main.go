@@ -73,13 +73,12 @@ func main() {
 func startServer(hostAddr string, serviceType string, blockStoreAddr string) error {
 	// Create a new RPC server
 	grpcServer := grpc.NewServer()
-
 	// Register RPC services
-	if serviceType == "metastore" || serviceType == "both" {
+	if serviceType == "meta" || serviceType == "both" {
 		metaStore := surfstore.NewMetaStore(blockStoreAddr)
 		surfstore.RegisterMetaStoreServer(grpcServer, metaStore)
 	}
-	if serviceType == "blockstore" || serviceType == "both" {
+	if serviceType == "block" || serviceType == "both" {
 		blockStore := surfstore.NewBlockStore()
 		surfstore.RegisterBlockStoreServer(grpcServer, blockStore)
 	}

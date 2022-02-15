@@ -2,6 +2,7 @@ package surfstore
 
 import (
 	context "context"
+	"fmt"
 	"time"
 
 	grpc "google.golang.org/grpc"
@@ -92,6 +93,7 @@ func (surfClient *RPCClient) GetFileInfoMap(serverFileInfoMap *map[string]*FileM
 	tmp, err := c.GetFileInfoMap(ctx, &emptypb.Empty{})
 	if err != nil {
 		conn.Close()
+		fmt.Println(err)
 		return err
 	}
 	*serverFileInfoMap = (*tmp).FileInfoMap
