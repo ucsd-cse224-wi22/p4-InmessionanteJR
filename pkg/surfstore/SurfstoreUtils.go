@@ -1,7 +1,6 @@
 package surfstore
 
 import (
-	"bufio"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
@@ -9,20 +8,17 @@ import (
 	"io/ioutil"
 	"log"
 	"os"
-	"strconv"
-	"strings"
 )
 
 // Implement the logic for a client syncing with the server here.
 func ClientSync(client RPCClient) {
 	// basic logic refers professor's response in https://piazza.com/class/kxwl1taq8t1ql?cid=425
+
 	// scan the base directory, and for each file, compute that file’s hash list
 	local_Filehashlists := ComputeFileHashlist(client)
-	// fmt.Println("local_Filehashlists: ", local_Filehashlists)
 
-	// git add, add local unadded file to local index
+	// git add, add local unadded file to local index (treating this as commit is also ok)
 	local_FileInfoMap := GitAdd(local_Filehashlists, client.BaseDir)
-	// fmt.Println("local_FileInfoMap0: ", local_FileInfoMap)
 
 	// get remote_FileInfoMap
 	var remote_FileInfoMap map[string]*FileMetaData
@@ -30,49 +26,41 @@ func ClientSync(client RPCClient) {
 	if err != nil {
 		log.Panicln("Error occured when call client.GetFileInfoMap API!", err)
 	}
-	// fmt.Println("remote_FileInfoMap: ", remote_FileInfoMap)
+
 	// compare the local version number to the remote version number
-
-	// download (pull)
+	// (1) download (pull)
 	for filename, remote_meta_data := range remote_FileInfoMap {
-		_, ok := local_FileInfoMap[filename]
-		// if !ok || (*remote_meta_data_ptr).Version > local_FileInfoMap[filename].Version {
-		if !ok || remote_meta_data.Version > local_FileInfoMap[filename].Version {
+		map_value, ok := local_FileInfoMap[filename]
+		if !ok || remote_meta_data.Version > map_value.Version {
 			Download_helper(client, filename, &local_FileInfoMap, &remote_FileInfoMap)
-		}
-	}
-
-	// upload (commit)
-	for filename, local_meta_data := range local_FileInfoMap {
-		_, ok := remote_FileInfoMap[filename]
-		if !ok || local_meta_data.Version == remote_FileInfoMap[filename].Version+1 {
-			Upload_helper(client, filename, &local_FileInfoMap)
-		} else {
+		} else if remote_meta_data.Version == map_value.Version && !CompareHashlist(map_value.BlockHashList, remote_meta_data.BlockHashList) {
+			// race condition
 			// someone update the server, and I upload the local, now the local file and the remote file have the same version, but different content
 			Download_helper(client, filename, &local_FileInfoMap, &remote_FileInfoMap)
 		}
 	}
 
-	// update index.txt
-	buff_content := ""
-	// fmt.Println("local_FileInfoMap: ", local_FileInfoMap)
-	for _, local_meta_data := range local_FileInfoMap {
-		buff_content += local_meta_data.Filename
-		buff_content += ","
-		buff_content += strconv.Itoa(int(local_meta_data.Version))
-		buff_content += ", "
-		for _, i := range local_meta_data.BlockHashList {
-			buff_content += i
-			buff_content += " "
+	// (2) upload (push)
+	for filename, local_meta_data := range local_FileInfoMap {
+		// deleted or not
+		deleted_flag := false
+		if len(local_FileInfoMap[filename].BlockHashList) == 1 && local_FileInfoMap[filename].BlockHashList[0] == "0" {
+			deleted_flag = true
 		}
-		buff_content = buff_content[:len(buff_content)-1]
-		buff_content += "\n"
+
+		map_value, ok := remote_FileInfoMap[filename]
+		if !ok || (local_meta_data.Version == map_value.Version+1) {
+			Upload_helper(client, filename, &local_FileInfoMap, deleted_flag)
+		} else if local_meta_data.Version > map_value.Version+1 {
+			log.Panicln("Local version is larger than 1 compared than remote version, which is imp!", err)
+		}
 	}
-	// fmt.Println("buff_content: ", buff_content)
-	if len(buff_content) > 0 {
-		buff_content = buff_content[:len(buff_content)-1]
+
+	// update index.txt
+	err = WriteMetaFile(local_FileInfoMap, client.BaseDir)
+	if err != nil {
+		log.Fatal("Error when call WriteMetaFile api!")
 	}
-	ioutil.WriteFile(client.BaseDir+"/index.txt", []byte(buff_content), 0644)
 }
 
 func badStringError(what, val string) error {
@@ -98,7 +86,6 @@ func ComputeFileHashlist(client RPCClient) (FileHashlists map[string][]string) {
 			for {
 				buffer := make([]byte, client.BlockSize)
 				bytes, err := f.Read(buffer)
-				// fmt.Println("bytes: ", bytes)
 				if err != nil {
 					if err == io.EOF {
 						break
@@ -106,59 +93,38 @@ func ComputeFileHashlist(client RPCClient) (FileHashlists map[string][]string) {
 						log.Panicln("Read file error!", err)
 					}
 				}
-				hashBytes := sha256.Sum256(buffer[:bytes])
-				hashString := hex.EncodeToString(hashBytes[:])
-				local_hashlist = append(local_hashlist, hashString)
+				local_hashlist = append(local_hashlist, GetBlockHashString(buffer[:bytes]))
 			}
 			FileHashlists[file.Name()] = local_hashlist
-			// fmt.Println("local_hashlist length when upload: ", len(local_hashlist))
 		}
 	}
 	return FileHashlists
 }
 
-func GitAdd(local_Filehashlists map[string][]string, BaseDir string) map[string]FileMetaData {
-	local_meta_map := make(map[string]FileMetaData)
+func GitAdd(local_Filehashlists map[string][]string, BaseDir string) map[string]*FileMetaData {
+	local_meta_map := make(map[string]*FileMetaData)
 	_, err := os.Stat(BaseDir + "/index.txt")
 	if os.IsNotExist(err) {
 		for filename, filehashlist := range local_Filehashlists {
-			local_meta_map[filename] = FileMetaData{Filename: filename, Version: 1, BlockHashList: filehashlist}
+			local_meta_map[filename] = &FileMetaData{Filename: filename, Version: 1, BlockHashList: filehashlist}
 		}
-		// fmt.Println("local_meta_map", local_meta_map)
 		return local_meta_map
 	} else if err != nil {
 		log.Panicln("Error occured when reading current dir in GitAdd!", err)
 		return nil
 	} else {
-		fi, err := os.Open(BaseDir + "/index.txt")
+		local_meta_map, err := LoadMetaFromMetaFile(BaseDir)
 		if err != nil {
-			log.Panicln("Error occured when reading index.txt!", err)
-		}
-		defer fi.Close()
-		br := bufio.NewReader(fi)
-		for {
-			line, _, err := br.ReadLine()
-			if err == io.EOF {
-				break
-			}
-			fmt.Println("line: ", line)
-			decoded_line := strings.Split(string(line), ",")
-			fmt.Println("decoded_line: ", decoded_line)
-			local_filename := decoded_line[0]
-			local_version, _ := strconv.Atoi(decoded_line[1])
-			local_hashlist := strings.Split(decoded_line[2], " ")
-			local_meta_map[local_filename] = FileMetaData{Filename: local_filename, Version: int32(local_version), BlockHashList: local_hashlist}
+			log.Panicln("Error occured when call LoadMetaFromMetaFile api!", err)
 		}
 		for filename, local_hashlist := range local_Filehashlists {
-			if _, ok := local_meta_map[filename]; !ok {
-
+			if map_value, ok := local_meta_map[filename]; !ok {
 				// (1) there are now new files in the base directory that aren’t in the index file
-				local_meta_map[filename] = FileMetaData{Filename: filename, Version: 1, BlockHashList: local_hashlist}
+				local_meta_map[filename] = &FileMetaData{Filename: filename, Version: 1, BlockHashList: local_hashlist}
 			} else {
-
 				// (2) files that are in the index file, but have changed since the last time the client was executed
-				if !CompareHashlist(local_meta_map[filename].BlockHashList, local_hashlist) {
-					local_meta_map[filename] = FileMetaData{Filename: filename, Version: local_meta_map[filename].Version + 1, BlockHashList: local_hashlist}
+				if !CompareHashlist(map_value.BlockHashList, local_hashlist) {
+					local_meta_map[filename] = &FileMetaData{Filename: filename, Version: map_value.Version + 1, BlockHashList: local_hashlist}
 				}
 			}
 		}
@@ -166,7 +132,7 @@ func GitAdd(local_Filehashlists map[string][]string, BaseDir string) map[string]
 		// when one file is in index.txt, but not in the curr dir, this file is deleted
 		for filename := range local_meta_map {
 			if _, ok := local_Filehashlists[filename]; !ok {
-				local_meta_map[filename] = FileMetaData{Filename: filename, Version: local_meta_map[filename].Version + 1, BlockHashList: []string{"0"}}
+				local_meta_map[filename] = &FileMetaData{Filename: filename, Version: local_meta_map[filename].Version + 1, BlockHashList: []string{"0"}}
 			}
 		}
 		return local_meta_map
@@ -185,35 +151,35 @@ func CompareHashlist(hashlist1 []string, hashlist2 []string) bool {
 	return true
 }
 
-func Download_helper(client RPCClient, filename string, local_FileInfoMap *map[string]FileMetaData, remote_FileInfoMap *map[string]*FileMetaData) {
-	// the current file is a delete file
+func Download_helper(client RPCClient, filename string, local_FileInfoMap *map[string]*FileMetaData, remote_FileInfoMap *map[string]*FileMetaData) {
+	// the current file is a deleted file
 	deleted_flag := false
-	if len((*remote_FileInfoMap)[filename].BlockHashList) > 0 && (*remote_FileInfoMap)[filename].BlockHashList[0] == "0" {
+	if len((*remote_FileInfoMap)[filename].BlockHashList) == 1 && (*remote_FileInfoMap)[filename].BlockHashList[0] == "0" {
 		deleted_flag = true
 	}
+
 	if deleted_flag {
+		(*local_FileInfoMap)[filename] = &FileMetaData{Filename: filename, Version: (*local_FileInfoMap)[filename].Version + 1, BlockHashList: []string{"0"}}
 		_, err := os.Stat(client.BaseDir + "/" + filename)
 		if err == nil {
 			err := os.Remove(client.BaseDir + "/" + filename)
 			if err != nil {
 				log.Panicln("Error occured when delete file!", err)
 			} else {
-				fmt.Println("Delete file successfully!")
+				log.Println("Delete file successfully!")
 				return
 			}
 		}
 	}
 
-	// get blocks
+	// get needed blocks from server
 	remote_hash_list := (*remote_FileInfoMap)[filename].BlockHashList
-	// fmt.Println("length for remote_hash_list when download: ", len(remote_hash_list))
 	var BlockStoreAddr string
 	err := client.GetBlockStoreAddr(&BlockStoreAddr)
 	if err != nil {
 		log.Panicln("Error occured when call client.GetBlockStoreAddr API!", err)
 	}
-	hash_block_lists := (*local_FileInfoMap)[filename].BlockHashList
-
+	hash_block_lists := (*remote_FileInfoMap)[filename].BlockHashList
 	local_block_map := make(map[string]Block)
 	for _, hash_block_list := range hash_block_lists {
 		var block Block
@@ -229,40 +195,44 @@ func Download_helper(client RPCClient, filename string, local_FileInfoMap *map[s
 	ioutil.WriteFile(client.BaseDir+"/"+filename, buff, 0644)
 
 	// update local_FileInfoMap
-	(*local_FileInfoMap)[filename] = *(*remote_FileInfoMap)[filename]
+	(*local_FileInfoMap)[filename] = (*remote_FileInfoMap)[filename]
 }
 
-func Upload_helper(client RPCClient, filename string, local_FileInfoMap *map[string]FileMetaData) {
-	var BlockStoreAddr string
-	err := client.GetBlockStoreAddr(&BlockStoreAddr)
-	if err != nil {
-		log.Panicln("Error occured when call client.GetBlockStoreAddr API!", err)
-	}
+func Upload_helper(client RPCClient, filename string, local_FileInfoMap *map[string]*FileMetaData, deleted_flag bool) {
+	if !deleted_flag {
+		var BlockStoreAddr string
+		err := client.GetBlockStoreAddr(&BlockStoreAddr)
+		if err != nil {
+			log.Panicln("Error occured when call client.GetBlockStoreAddr API!", err)
+		}
 
-	remote_exist_hash_list := make([]string, 0)
-	client.HasBlocks((*local_FileInfoMap)[filename].BlockHashList, BlockStoreAddr, &remote_exist_hash_list)
+		remote_exist_hash_list := make([]string, 0)
+		client.HasBlocks((*local_FileInfoMap)[filename].BlockHashList, BlockStoreAddr, &remote_exist_hash_list)
 
-	remote_exist_hash_list_set := make(map[string]bool)
-	// go doesn't support in-built set, so we use hashmap
-	for _, i := range remote_exist_hash_list {
-		remote_exist_hash_list_set[i] = true
-	}
+		remote_exist_hash_list_set := make(map[string]bool)
+		// go doesn't support in-built set, so we use hashmap
+		for _, i := range remote_exist_hash_list {
+			remote_exist_hash_list_set[i] = true
+		}
 
-	// upload blocks that doesn't exist in metastore server
-	blocks_map := GetBlocksHelper(client, filename)
-	for _, key := range (*local_FileInfoMap)[filename].BlockHashList {
-		if _, ok := remote_exist_hash_list_set[key]; !ok {
-			tmp := blocks_map[key]
-			var succ bool
-			client.PutBlock(&tmp, BlockStoreAddr, &succ)
+		// upload blocks that doesn't exist in metastore server
+		blocks_map := GetBlocksHelper(client, filename) // can optimize, only get a blocks_map which only contains keys that are not in client.HasBlocks()
+		for _, key := range (*local_FileInfoMap)[filename].BlockHashList {
+			if _, ok := remote_exist_hash_list_set[key]; !ok {
+				tmp := blocks_map[key]
+				var succ bool
+				client.PutBlock(&tmp, BlockStoreAddr, &succ)
+				if !succ {
+					log.Panicln("Error occured when call client.PutBlock API!")
+				}
+			}
 		}
 	}
 
 	// upload remote index
 	var latestVersion int32
 	tmp := (*local_FileInfoMap)[filename]
-	// fmt.Println("tmp", tmp)
-	err = client.UpdateFile(&tmp, &latestVersion)
+	err := client.UpdateFile(tmp, &latestVersion)
 	if err != nil {
 		log.Panicln("Error occured when call client.UpdateFile API!", err)
 	}
