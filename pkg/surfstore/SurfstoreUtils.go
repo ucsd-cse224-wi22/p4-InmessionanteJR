@@ -138,7 +138,7 @@ func GitAdd(client RPCClient, local_Filehashlists map[string][]string, BaseDir s
 				if err != nil {
 					log.Panicln("Error occured when call client.GetFileInfoMap API!", err)
 				}
-				if _, ok := remote_FileInfoMap[filename]; ok && CompareHashlist(remote_FileInfoMap[filename].BlockHashList, local_Filehashlists[filename]) {
+				if _, ok := remote_FileInfoMap[filename]; ok && (len(remote_FileInfoMap[filename].BlockHashList) == 1 && remote_FileInfoMap[filename].BlockHashList[0] == "0") {
 					local_meta_map[filename] = &FileMetaData{Filename: filename, Version: local_meta_map[filename].Version, BlockHashList: []string{"0"}}
 				} else {
 					local_meta_map[filename] = &FileMetaData{Filename: filename, Version: local_meta_map[filename].Version + 1, BlockHashList: []string{"0"}}
