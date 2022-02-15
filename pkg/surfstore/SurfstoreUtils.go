@@ -18,7 +18,7 @@ func ClientSync(client RPCClient) {
 	local_Filehashlists := ComputeFileHashlist(client)
 
 	// git add, add local unadded file to local index (treating this as commit is also ok)
-	local_FileInfoMap := GitAdd(local_Filehashlists, client.BaseDir)
+	local_FileInfoMap := GitAdd(client, local_Filehashlists, client.BaseDir)
 
 	// get remote_FileInfoMap
 	var remote_FileInfoMap map[string]*FileMetaData
@@ -101,7 +101,7 @@ func ComputeFileHashlist(client RPCClient) (FileHashlists map[string][]string) {
 	return FileHashlists
 }
 
-func GitAdd(local_Filehashlists map[string][]string, BaseDir string) map[string]*FileMetaData {
+func GitAdd(client RPCClient, local_Filehashlists map[string][]string, BaseDir string) map[string]*FileMetaData {
 	local_meta_map := make(map[string]*FileMetaData)
 	_, err := os.Stat(BaseDir + "/index.txt")
 	if os.IsNotExist(err) {
@@ -132,7 +132,17 @@ func GitAdd(local_Filehashlists map[string][]string, BaseDir string) map[string]
 		// when one file is in index.txt, but not in the curr dir, this file is deleted
 		for filename := range local_meta_map {
 			if _, ok := local_Filehashlists[filename]; !ok {
-				local_meta_map[filename] = &FileMetaData{Filename: filename, Version: local_meta_map[filename].Version + 1, BlockHashList: []string{"0"}}
+				// get remote_FileInfoMap
+				var remote_FileInfoMap map[string]*FileMetaData
+				err := client.GetFileInfoMap(&remote_FileInfoMap)
+				if err != nil {
+					log.Panicln("Error occured when call client.GetFileInfoMap API!", err)
+				}
+				if _, ok := remote_FileInfoMap[filename]; ok && CompareHashlist(remote_FileInfoMap[filename].BlockHashList, local_Filehashlists[filename]) {
+					local_meta_map[filename] = &FileMetaData{Filename: filename, Version: local_meta_map[filename].Version, BlockHashList: []string{"0"}}
+				} else {
+					local_meta_map[filename] = &FileMetaData{Filename: filename, Version: local_meta_map[filename].Version + 1, BlockHashList: []string{"0"}}
+				}
 			}
 		}
 		return local_meta_map
